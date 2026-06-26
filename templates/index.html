@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Realtime Internet Speed Monitor</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Chart.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+    <!-- SocketIO client (served by Flask-SocketIO) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"
+            integrity="sha512-+8qVZVbX4G6VYw0G0kZKZbUjV+GZcKxYQ3fR0V6G+3KkZpK6V+G0c6VYcXJg=="
+            crossorigin="referrer"></script>
+    <style>
+        :root {
+            --bg-excellent: #e8f5e9;
+            --bg-stable:    #e3f2fd;
+            --bg-poor:      #ffebee;
+            --text-excellent: #2e7d32;
+            --text-stable:    #1565c0;
+            --text-poor:      #c62828;
+            --card-bg: rgba(255,255,255,0.85);
+        }
+        body.excellent   { background: var(--bg-excellent); color: var(--text-excellent); }
+        body.stable      { background: var(--bg-stable);   color: var(--text-stable); }
+        body.poor        { background: var(--bg-poor);    color: var(--text-poor); }
+        body {
+            margin: 0;
+            font-family: Arial, Helvetica, sans-serif;
+            transition: background 0.4s, color 0.4s;
+        }
+        header {
+            text-align: center;
+            padding: 1rem 0;
+            background: rgba(0,0,0,0.1);
+        }
+        .stats {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 1.5rem;
+            padding: 2rem;
+        }
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 1.5rem;
+            min-width: 180px;
+            text-align: center;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+        }
+        .card h2 { margin: 0 0 0.5rem; font-size: 1.2rem; }
+        .card .value { font-size: 2.2rem; font-weight: bold; }
+        .card .unit { font-size: 1rem; opacity: 0.8; }
+        #chartContainer {
+            max-width: 90%;
+            margin: 0 auto 2rem;
+        }
+        footer {
+            text-align: center;
+            padding: 1rem;
+            font-size: 0.9rem;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Internet Speed Monitor</h1>
+        <div id="status-text">Initializing…</div>
+    </header>
+
+    <section class="stats">
+        <div class="card">
+            <h2>Download</h2>
+            <div class="value" id="download-val">‑‑‑</div>
+            <div class="unit">MB/s</div>
+        </div>
+        <div class="card">
+            <h2>Upload</h2>
+            <div class="value" id="upload-val">‑‑‑</div>
+            <div class="unit">MB/s</div>
+        </div>
+        <div class="card">
+            <h2>Latency</h2>
+            <div class="value" id="ping-val">‑‑‑</div>
+            <div class="unit">ms</div>
+        </div>
+        <div class="card">
+            <h2>Last Update</h2>
+            <div class="value" id="timestamp-val">‑‑‑</div>
+            <div class="unit"></div>
+        </div>
+    </section>
+
+    <div id="chartContainer">
+        <canvas id="speedChart"></canvas>
+    </div>
+
+    <footer>
+        <p>Data refreshed every {{ update_interval }} s • Powered by Flask‑SocketIO & speedtest-cli</p>
+    </footer>
+
+    <script>
+        // ------------------------------------------------------------------
+        // SocketIO setup
+        // ------------------------------------------------------------------
+        const socket = io();
+
+        // Keep references to the chart so we can update it
+        let speedChart;
+
+        // ------------------------------------------------------------------
+        // Helper to update the UI numbers
+        // ------------------------------------------------------------------
+        function updateNumbers(data) {
+            document.getElementById('download-val').textContent = data.download.toFixed(2);
+            document.getElementById('upload-val').textContent   = data.upload.toFixed(2);
+            document.getElementById('ping-val').textContent     = data.ping.toFixed(1);
+            document.getElementById('timestamp-val').textContent = data.timestamp;
+            document.getElementById('status-text').textContent =
+                data.status.charAt(0).toUpperCase() + data.status.slice(1);
+        }
+
+        // ------------------------------------------------------------------
+        // Initialise Chart.js (empty datasets)
+        // ------------------------------------------------------------------
+        function initChart() {
+            const ctx = document.getElementById('speedChart').getContext('2d');
+            speedChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [], // will be filled with timestamps
+                    datasets: [
+                        {
+                            label: 'Download (MB/s)',
+                            data: [],
+                            borderColor: '#2e7d32',
+                            backgroundColor: 'rgba(46,125,50,0.2)',
+                            tension: 0.3,
+                            yAxisID: 'ySpeed'
+                        },
+                        {
+                            label: 'Upload (MB/s)',
+                            data: [],
+                            borderColor: '#1565c0',
+                            backgroundColor: 'rgba(21,101,192,0.2)',
+                            tension: 0.3,
+                            yAxisID: 'ySpeed'
+                        },
+                        {
+                            label: 'Ping (ms)',
+                            data: [],
+                            borderColor: '#c62828',
+                            backgroundColor: 'rgba(198,40,40,0.2)',
+                            tension: 0.3,
+                            yAxisID: 'yPing'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        tooltip: { mode: 'nearest' },
+                        legend: { position: 'top' }
+                    },
+                    scales: {
+                        ySpeed: {
+                            type: 'linear',
+                            position: 'left',
+                            title: { display: true, text: 'Speed (MB/s)' },
+                            grid: { drawOnChartArea: false }
+                        },
+                        yPing: {
+                            type: 'linear',
+                            position: 'right',
+                            title: { display: true, text: 'Latency (ms)' },
+                            grid: { drawOnChartArea: false }
+                        },
+                        x: {
+                            title: { display: true, text: 'Time' }
+                        }
+                    }
+                }
+            });
+        }
+
+        // ------------------------------------------------------------------
+        // Socket event: initial state (sent right after connect)
+        // ------------------------------------------------------------------
+        socket.on('initial_state', function(data) {
+            document.body.className = data.body_class; // set colour theme
+            updateNumbers(data);
+            // Kick‑start chart with empty data; will be populated on first update
+            if (!speedChart) initChart();
+        });
+
+        // ------------------------------------------------------------------
+        // Socket event: periodic update
+        // ------------------------------------------------------------------
+        socket.on('update', function(data) {
+            if (data.error) {
+                console.error('Speedtest error:', data.error);
+                return;
+            }
+            // Update colour/theme
+            document.body.className = data.body_class;
+            // Update numbers
+            updateNumbers(data);
+            // Update chart
+            if (speedChart) {
+                speedChart.data.labels.push(data.timestamp);
+                speedChart.data.datasets[0].data.push(data.download);
+                speedChart.data.datasets[1].data.push(data.upload);
+                speedChart.data.datasets[2].data.push(data.ping);
+
+                // Keep only the last N points (same as server side)
+                const maxPoints = {{ history_length }};
+                if (speedChart.data.labels.length > maxPoints) {
+                    speedChart.data.labels.shift();
+                    speedChart.data.datasets.forEach(ds => ds.data.shift());
+                }
+                speedChart.update('none'); // 'none' avoids animation on each point
+            }
+        });
+
+        // ------------------------------------------------------------------
+        // Initialise chart on page load (in case socket connects after this runs)
+        // ------------------------------------------------------------------
+        document.addEventListener('DOMContentLoaded', function() {
+            if (!speedChart) initChart();
+        });
+    </script>
+</body>
+</html>

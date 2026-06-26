@@ -1,0 +1,4 @@
+Flask
+Flask-SocketIO
+eventlet   # or gevent if you prefer
+speedtest-cli
