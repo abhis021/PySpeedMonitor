@@ -230,6 +230,15 @@
             speedChart.update('none');
         }
 
+        function clientTimestamp() {
+            return new Intl.DateTimeFormat(undefined, {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                timeZoneName: 'short'
+            }).format(new Date());
+        }
+
         async function measurePing() {
             const samples = [];
             for (let i = 0; i < 6; i += 1) {
@@ -288,7 +297,11 @@
             const resp = await fetch('/api/result', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ client_id: clientId, ...result })
+                body: JSON.stringify({
+                    client_id: clientId,
+                    timestamp: clientTimestamp(),
+                    ...result
+                })
             });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             return resp.json();

@@ -11,7 +11,6 @@ to how Fast.com measures from the viewer's location.
 import os
 import threading
 from collections import defaultdict, deque
-from datetime import datetime
 
 from flask import Flask, jsonify, render_template, request
 
@@ -124,7 +123,7 @@ def api_result():
     download = round(float(data.get("download", 0.0)), 2)
     upload = round(float(data.get("upload", 0.0)), 2)
     ping = round(float(data.get("ping", 0.0)), 1)
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    timestamp = str(data.get("timestamp") or "--:--:--")[:64]
 
     with _state_lock:
         state = _client_state[client_id]
