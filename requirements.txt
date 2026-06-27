@@ -1,4 +1,2 @@
-Flask
-Flask-SocketIO
-eventlet   # or gevent if you prefer
-speedtest-cli
+Flask==2.3.3
+gunicorn==22.0.0

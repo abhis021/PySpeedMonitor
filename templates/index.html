@@ -2,37 +2,36 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Realtime Internet Speed Monitor</title>
+    <title>Internet Speed Monitor</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <!-- Chart.js from CDN -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
-    <!-- SocketIO client (served by Flask-SocketIO) -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"
-            integrity="sha512-+8qVZVbX4G6VYw0G0kZKZbUjV+GZcKxYQ3fR0V6G+3KkZpK6V+G0c6VYcXJg=="
-            crossorigin="referrer"></script>
     <style>
         :root {
             --bg-excellent: #e8f5e9;
-            --bg-stable:    #e3f2fd;
-            --bg-poor:      #ffebee;
-            --text-excellent: #2e7d32;
-            --text-stable:    #1565c0;
-            --text-poor:      #c62828;
-            --card-bg: rgba(255,255,255,0.85);
+            --bg-stable: #e3f2fd;
+            --bg-poor: #ffebee;
+            --txt-excellent: #2e7d32;
+            --txt-stable: #1565c0;
+            --txt-poor: #c62828;
+            --card-bg: rgba(255, 255, 255, 0.88);
         }
-        body.excellent   { background: var(--bg-excellent); color: var(--text-excellent); }
-        body.stable      { background: var(--bg-stable);   color: var(--text-stable); }
-        body.poor        { background: var(--bg-poor);    color: var(--text-poor); }
+
         body {
             margin: 0;
             font-family: Arial, Helvetica, sans-serif;
-            transition: background 0.4s, color 0.4s;
+            transition: background .4s, color .4s;
         }
+
+        body.excellent { background: var(--bg-excellent); color: var(--txt-excellent); }
+        body.stable { background: var(--bg-stable); color: var(--txt-stable); }
+        body.poor { background: var(--bg-poor); color: var(--txt-poor); }
+
         header {
             text-align: center;
             padding: 1rem 0;
-            background: rgba(0,0,0,0.1);
+            background: rgba(0, 0, 0, 0.1);
         }
+
         .stats {
             display: flex;
             flex-wrap: wrap;
@@ -40,54 +39,70 @@
             gap: 1.5rem;
             padding: 2rem;
         }
+
         .card {
             background: var(--card-bg);
-            border-radius: 12px;
+            border-radius: 8px;
             padding: 1.5rem;
             min-width: 180px;
             text-align: center;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
         }
-        .card h2 { margin: 0 0 0.5rem; font-size: 1.2rem; }
-        .card .value { font-size: 2.2rem; font-weight: bold; }
-        .card .unit { font-size: 1rem; opacity: 0.8; }
+
+        .card h2 {
+            margin: 0 0 .5rem;
+            font-size: 1.2rem;
+        }
+
+        .card .value {
+            font-size: 2.2rem;
+            font-weight: bold;
+        }
+
+        .card .unit {
+            font-size: 1rem;
+            opacity: .8;
+        }
+
         #chartContainer {
+            height: 360px;
             max-width: 90%;
             margin: 0 auto 2rem;
         }
+
         footer {
             text-align: center;
             padding: 1rem;
-            font-size: 0.9rem;
-            opacity: 0.7;
+            font-size: .9rem;
+            opacity: .7;
         }
     </style>
 </head>
-<body>
+<body class="poor">
     <header>
         <h1>Internet Speed Monitor</h1>
-        <div id="status-text">Initializing…</div>
+        <div id="status-text">Ready</div>
     </header>
 
     <section class="stats">
         <div class="card">
             <h2>Download</h2>
-            <div class="value" id="download-val">‑‑‑</div>
-            <div class="unit">MB/s</div>
+            <div class="value" id="download-val">---</div>
+            <div class="unit">Mbps</div>
         </div>
         <div class="card">
             <h2>Upload</h2>
-            <div class="value" id="upload-val">‑‑‑</div>
-            <div class="unit">MB/s</div>
+            <div class="value" id="upload-val">---</div>
+            <div class="unit">Mbps</div>
         </div>
         <div class="card">
             <h2>Latency</h2>
-            <div class="value" id="ping-val">‑‑‑</div>
+            <div class="value" id="ping-val">---</div>
             <div class="unit">ms</div>
         </div>
         <div class="card">
             <h2>Last Update</h2>
-            <div class="value" id="timestamp-val">‑‑‑</div>
+            <div class="value" id="timestamp-val">---</div>
             <div class="unit"></div>
         </div>
     </section>
@@ -97,140 +112,232 @@
     </div>
 
     <footer>
-        <p>Data refreshed every {{ update_interval }} s • Powered by Flask‑SocketIO & speedtest-cli</p>
+        <p>Client-side test every {{ test_interval }}s. Powered by Flask and LibreSpeed-style browser testing.</p>
     </footer>
 
     <script>
-        // ------------------------------------------------------------------
-        // SocketIO setup
-        // ------------------------------------------------------------------
-        const socket = io();
+        const TEST_INTERVAL = {{ test_interval|tojson }} * 1000;
+        const MAX_POINTS = {{ history_length|tojson }};
+        const DOWNLOAD_SECONDS = 8;
+        const UPLOAD_SECONDS = 6;
+        const DOWNLOAD_STREAMS = 4;
+        const UPLOAD_STREAMS = 2;
+        const DOWNLOAD_CHUNK_SIZE = 10_000_000;
+        const UPLOAD_CHUNK_SIZE = 1_000_000;
 
-        // Keep references to the chart so we can update it
-        let speedChart;
+        const downloadVal = document.getElementById('download-val');
+        const uploadVal = document.getElementById('upload-val');
+        const pingVal = document.getElementById('ping-val');
+        const timestampVal = document.getElementById('timestamp-val');
+        const statusText = document.getElementById('status-text');
 
-        // ------------------------------------------------------------------
-        // Helper to update the UI numbers
-        // ------------------------------------------------------------------
-        function updateNumbers(data) {
-            document.getElementById('download-val').textContent = data.download.toFixed(2);
-            document.getElementById('upload-val').textContent   = data.upload.toFixed(2);
-            document.getElementById('ping-val').textContent     = data.ping.toFixed(1);
-            document.getElementById('timestamp-val').textContent = data.timestamp;
-            document.getElementById('status-text').textContent =
-                data.status.charAt(0).toUpperCase() + data.status.slice(1);
+        function getClientId() {
+            let id = localStorage.getItem('pyspeedmonitor_client_id');
+            if (!id) {
+                id = crypto.randomUUID
+                    ? crypto.randomUUID()
+                    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+                localStorage.setItem('pyspeedmonitor_client_id', id);
+            }
+            return id;
         }
 
-        // ------------------------------------------------------------------
-        // Initialise Chart.js (empty datasets)
-        // ------------------------------------------------------------------
-        function initChart() {
-            const ctx = document.getElementById('speedChart').getContext('2d');
-            speedChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: [], // will be filled with timestamps
-                    datasets: [
-                        {
-                            label: 'Download (MB/s)',
-                            data: [],
-                            borderColor: '#2e7d32',
-                            backgroundColor: 'rgba(46,125,50,0.2)',
-                            tension: 0.3,
-                            yAxisID: 'ySpeed'
-                        },
-                        {
-                            label: 'Upload (MB/s)',
-                            data: [],
-                            borderColor: '#1565c0',
-                            backgroundColor: 'rgba(21,101,192,0.2)',
-                            tension: 0.3,
-                            yAxisID: 'ySpeed'
-                        },
-                        {
-                            label: 'Ping (ms)',
-                            data: [],
-                            borderColor: '#c62828',
-                            backgroundColor: 'rgba(198,40,40,0.2)',
-                            tension: 0.3,
-                            yAxisID: 'yPing'
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: { mode: 'index', intersect: false },
-                    plugins: {
-                        tooltip: { mode: 'nearest' },
-                        legend: { position: 'top' }
+        const clientId = getClientId();
+        const ctx = document.getElementById('speedChart').getContext('2d');
+        const speedChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Download (Mbps)',
+                        data: [],
+                        borderColor: '#2e7d32',
+                        backgroundColor: 'rgba(46, 125, 50, 0.2)',
+                        tension: 0.3,
+                        yAxisID: 'ySpeed'
                     },
-                    scales: {
-                        ySpeed: {
-                            type: 'linear',
-                            position: 'left',
-                            title: { display: true, text: 'Speed (MB/s)' },
-                            grid: { drawOnChartArea: false }
-                        },
-                        yPing: {
-                            type: 'linear',
-                            position: 'right',
-                            title: { display: true, text: 'Latency (ms)' },
-                            grid: { drawOnChartArea: false }
-                        },
-                        x: {
-                            title: { display: true, text: 'Time' }
-                        }
+                    {
+                        label: 'Upload (Mbps)',
+                        data: [],
+                        borderColor: '#1565c0',
+                        backgroundColor: 'rgba(21, 101, 192, 0.2)',
+                        tension: 0.3,
+                        yAxisID: 'ySpeed'
+                    },
+                    {
+                        label: 'Latency (ms)',
+                        data: [],
+                        borderColor: '#c62828',
+                        backgroundColor: 'rgba(198, 40, 40, 0.2)',
+                        tension: 0.3,
+                        yAxisID: 'yPing'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    tooltip: { mode: 'nearest' },
+                    legend: { position: 'top' }
+                },
+                scales: {
+                    ySpeed: {
+                        type: 'linear',
+                        position: 'left',
+                        title: { display: true, text: 'Speed (Mbps)' },
+                        grid: { drawOnChartArea: false }
+                    },
+                    yPing: {
+                        type: 'linear',
+                        position: 'right',
+                        title: { display: true, text: 'Latency (ms)' },
+                        grid: { drawOnChartArea: false }
+                    },
+                    x: {
+                        title: { display: true, text: 'Time' }
                     }
                 }
-            });
+            }
+        });
+
+        function cacheBust(path) {
+            const sep = path.includes('?') ? '&' : '?';
+            return `${path}${sep}r=${Date.now()}-${Math.random()}`;
         }
 
-        // ------------------------------------------------------------------
-        // Socket event: initial state (sent right after connect)
-        // ------------------------------------------------------------------
-        socket.on('initial_state', function(data) {
-            document.body.className = data.body_class; // set colour theme
-            updateNumbers(data);
-            // Kick‑start chart with empty data; will be populated on first update
-            if (!speedChart) initChart();
-        });
+        function setBodyClass(cls) {
+            document.body.className = cls || 'poor';
+        }
 
-        // ------------------------------------------------------------------
-        // Socket event: periodic update
-        // ------------------------------------------------------------------
-        socket.on('update', function(data) {
-            if (data.error) {
-                console.error('Speedtest error:', data.error);
-                return;
+        function updateNumbers(data) {
+            downloadVal.textContent = Number(data.download ?? 0).toFixed(2);
+            uploadVal.textContent = Number(data.upload ?? 0).toFixed(2);
+            pingVal.textContent = Number(data.ping ?? 0).toFixed(1);
+            timestampVal.textContent = data.timestamp || '--:--:--';
+            statusText.textContent =
+                data.status.charAt(0).toUpperCase() + data.status.slice(1);
+            setBodyClass(data.body_class);
+        }
+
+        function updateChart(history) {
+            speedChart.data.labels = (history?.time || []).slice(-MAX_POINTS);
+            speedChart.data.datasets[0].data = (history?.download || []).slice(-MAX_POINTS);
+            speedChart.data.datasets[1].data = (history?.upload || []).slice(-MAX_POINTS);
+            speedChart.data.datasets[2].data = (history?.ping || []).slice(-MAX_POINTS);
+            speedChart.update('none');
+        }
+
+        async function measurePing() {
+            const samples = [];
+            for (let i = 0; i < 6; i += 1) {
+                const start = performance.now();
+                await fetch(cacheBust('/backend/empty'), { cache: 'no-store' });
+                samples.push(performance.now() - start);
             }
-            // Update colour/theme
-            document.body.className = data.body_class;
-            // Update numbers
-            updateNumbers(data);
-            // Update chart
-            if (speedChart) {
-                speedChart.data.labels.push(data.timestamp);
-                speedChart.data.datasets[0].data.push(data.download);
-                speedChart.data.datasets[1].data.push(data.upload);
-                speedChart.data.datasets[2].data.push(data.ping);
+            samples.sort((a, b) => a - b);
+            return samples[Math.floor(samples.length / 2)];
+        }
 
-                // Keep only the last N points (same as server side)
-                const maxPoints = {{ history_length }};
-                if (speedChart.data.labels.length > maxPoints) {
-                    speedChart.data.labels.shift();
-                    speedChart.data.datasets.forEach(ds => ds.data.shift());
+        async function measureDownload() {
+            const endTime = performance.now() + DOWNLOAD_SECONDS * 1000;
+            let bytes = 0;
+            const start = performance.now();
+
+            async function streamLoop() {
+                while (performance.now() < endTime) {
+                    const resp = await fetch(
+                        cacheBust(`/backend/garbage?size=${DOWNLOAD_CHUNK_SIZE}`),
+                        { cache: 'no-store' }
+                    );
+                    const buffer = await resp.arrayBuffer();
+                    bytes += buffer.byteLength;
                 }
-                speedChart.update('none'); // 'none' avoids animation on each point
             }
-        });
 
-        // ------------------------------------------------------------------
-        // Initialise chart on page load (in case socket connects after this runs)
-        // ------------------------------------------------------------------
-        document.addEventListener('DOMContentLoaded', function() {
-            if (!speedChart) initChart();
-        });
+            await Promise.all(Array.from({ length: DOWNLOAD_STREAMS }, streamLoop));
+            const seconds = (performance.now() - start) / 1000;
+            return (bytes * 8) / seconds / 1_000_000;
+        }
+
+        async function measureUpload() {
+            const endTime = performance.now() + UPLOAD_SECONDS * 1000;
+            const payload = new Uint8Array(UPLOAD_CHUNK_SIZE);
+            let bytes = 0;
+            const start = performance.now();
+
+            async function streamLoop() {
+                while (performance.now() < endTime) {
+                    await fetch(cacheBust('/backend/empty'), {
+                        method: 'POST',
+                        body: payload,
+                        cache: 'no-store'
+                    });
+                    bytes += payload.byteLength;
+                }
+            }
+
+            await Promise.all(Array.from({ length: UPLOAD_STREAMS }, streamLoop));
+            const seconds = (performance.now() - start) / 1000;
+            return (bytes * 8) / seconds / 1_000_000;
+        }
+
+        async function postResult(result) {
+            const resp = await fetch('/api/result', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ client_id: clientId, ...result })
+            });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            return resp.json();
+        }
+
+        async function fetchStatus() {
+            const resp = await fetch(`/api/status?client_id=${encodeURIComponent(clientId)}`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            return resp.json();
+        }
+
+        let running = false;
+        async function runSpeedTest() {
+            if (running) return;
+            running = true;
+            try {
+                statusText.textContent = 'Testing latency';
+                const ping = await measurePing();
+                pingVal.textContent = ping.toFixed(1);
+
+                statusText.textContent = 'Testing download';
+                const download = await measureDownload();
+                downloadVal.textContent = download.toFixed(2);
+
+                statusText.textContent = 'Testing upload';
+                const upload = await measureUpload();
+                uploadVal.textContent = upload.toFixed(2);
+
+                const data = await postResult({ download, upload, ping });
+                updateNumbers(data);
+                updateChart(data.history);
+            } catch (err) {
+                console.error('Speed test failed:', err);
+                statusText.textContent = 'Connection error';
+                setBodyClass('poor');
+            } finally {
+                running = false;
+            }
+        }
+
+        fetchStatus()
+            .then(data => {
+                updateNumbers(data);
+                updateChart(data.history);
+            })
+            .catch(err => console.error('Failed to fetch history:', err))
+            .finally(runSpeedTest);
+
+        setInterval(runSpeedTest, TEST_INTERVAL);
     </script>
 </body>
 </html>
